@@ -2,17 +2,21 @@
 // prediccion local + reconciliacion (rebobinar al estado del servidor y re-simular las entradas propias).
 import { Game, PHASE } from '../shared/game.js';
 import { DT } from '../shared/constants.js';
-import { copyControls, packControls, emptyControls } from '../shared/car.js';
+import { copyControls, packControls, unpackControls, emptyControls } from '../shared/car.js';
 import { V3, Quat } from '../shared/vec.js';
 import { PoseHistory } from './localSession.js';
 
 // Eventos que decide el servidor (los demas se predicen localmente para que respondan al instante)
 const SERVER_EVENTS = new Set(['goal', 'demo', 'save', 'shot', 'countdown', 'go', 'overtime', 'end', 'respawn']);
 const LOCAL_EVENTS = new Set(['hit', 'bounce', 'jump', 'flip', 'pad', 'bump']);
+const MAX_INPUTS = 600; // 5 s de historial como maximo
 
 export class NetClient {
+  // url: direccion ws(s):// del servidor, o una funcion async que devuelve un socket compatible
+  // (WebRTC hacia el anfitrion o un socket en memoria en el modo sin servidor)
   constructor(url) {
-    this.url = url;
+    this.url = typeof url === 'string' ? url : null;
+    this.factory = typeof url === 'function' ? url : null;
     this.ws = null;
     this.handlers = {};
     this.id = null;
@@ -22,14 +26,18 @@ export class NetClient {
   }
 
   on(type, fn) { (this.handlers[type] ||= []).push(fn); return this; }
-  off(type) { delete this.handlers[type]; }
+  off(type, fn) {
+    if (!fn) { delete this.handlers[type]; return; }
+    const list = this.handlers[type];
+    if (list) this.handlers[type] = list.filter((h) => h !== fn);
+  }
   emit(type, msg) { for (const fn of this.handlers[type] || []) fn(msg); }
 
   connect(profile) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       let settled = false;
       try {
-        this.ws = new WebSocket(this.url);
+        this.ws = this.factory ? await this.factory() : new WebSocket(this.url);
       } catch (e) { reject(e); return; }
       this.ws.binaryType = 'arraybuffer';
       const timer = setTimeout(() => { if (!settled) { settled = true; reject(new Error('timeout')); this.ws.close(); } }, 8000);
@@ -58,6 +66,7 @@ export class NetClient {
         this.emit('close', {});
       };
       this.ws.onerror = () => {};
+      if (this.ws.readyState === 1) this.ws.onopen(); // los sockets propios pueden llegar ya abiertos
     });
   }
 
@@ -99,7 +108,20 @@ export class OnlineSession {
     this.queueLen = 0;
     this.lastSnapshotAt = 0;
     this.setup(startMsg);
-    net.on('snapshot', (buf) => { this.pending = buf; this.lastSnapshotAt = performance.now(); });
+    this._onSnapshot = (buf) => { this.pending = buf; this.lastSnapshotAt = performance.now(); };
+    net.on('snapshot', this._onSnapshot);
+  }
+
+  // Estadisticas autoritativas del servidor (goles, asistencias, paradas...)
+  applyStats(players) {
+    if (!Array.isArray(players)) return;
+    for (const s of players) {
+      const p = this.game.players.get(s.id);
+      if (!p) continue;
+      for (const k of ['goals', 'assists', 'saves', 'shots', 'demos', 'points']) {
+        if (Number.isFinite(s[k])) p[k] = s[k];
+      }
+    }
   }
 
   setup(msg) {
@@ -140,13 +162,18 @@ export class OnlineSession {
     const game = this.game;
     this.acc += Math.min(frameDt, 0.25) * this.timeScale;
     const me = this.localCarId != null ? game.world.getCar(this.localCarId) : null;
+    const spectator = this.localCarId == null;
     while (this.acc >= DT) {
       this.seq++;
-      const c = copyControls(emptyControls(), controls);
-      if (game.phase === PHASE.COUNTDOWN) { c.throttle = 0; c.boost = false; }
-      this.inputs.set(this.seq, c);
-      if (this.sendBuf.length === 0) this.sendFirst = this.seq;
-      this.sendBuf.push(packControls(c));
+      // misma cuantizacion que el servidor: cliente y servidor simulan exactamente la misma entrada
+      const packed = packControls(controls);
+      const c = unpackControls(packed);
+      if (!spectator) {
+        this.inputs.set(this.seq, c);
+        if (this.inputs.size > MAX_INPUTS) this.inputs.delete(this.seq - MAX_INPUTS);
+        if (this.sendBuf.length === 0) this.sendFirst = this.seq;
+        this.sendBuf.push(packed);
+      }
       this.history.save(game.world);
       if (me) copyControls(me.controls, c);
       game.step(DT);
@@ -174,6 +201,8 @@ export class OnlineSession {
     if (emit) {
       for (const e of game.events) {
         if (!LOCAL_EVENTS.has(e.type)) continue;
+        // los toques de otros coches los confirma el servidor (evita duplicados y toques fantasma)
+        if (e.type === 'hit' && e.car !== this.localCarId) continue;
         if (e.car === this.localCarId) e.local = true;
         this.events.push(e);
       }
@@ -184,7 +213,8 @@ export class OnlineSession {
   // Eventos autoritativos que llegan del servidor
   pushServerEvents(list) {
     for (const e of list) {
-      if (!SERVER_EVENTS.has(e.type)) continue;
+      const remoteHit = e.type === 'hit' && e.car !== this.localCarId;
+      if (!SERVER_EVENTS.has(e.type) && !remoteHit) continue;
       if (e.car === this.localCarId) e.local = true;
       this.events.push(e);
     }
@@ -212,6 +242,7 @@ export class OnlineSession {
     // re-simular las entradas que el servidor aun no ha procesado
     const me = this.localCarId != null ? game.world.getCar(this.localCarId) : null;
     let from = lastSeq + 1;
+    if (!me) from = this.seq + 1; // espectador: mostrar el estado del servidor sin re-simular
     if (this.seq - from > 90) from = this.seq - 90;
     if (from > this.seq + 1) { this.seq = lastSeq; from = lastSeq + 1; }
     this.history.save(game.world);
@@ -284,7 +315,7 @@ export class OnlineSession {
   }
 
   destroy() {
-    this.net.off('snapshot');
+    this.net.off('snapshot', this._onSnapshot);
   }
 }
 

@@ -36,6 +36,7 @@ export class Game {
     this.ballHitThisKickoff = false;
     this.world.onTouch = (car, strength) => this._onTouch(car, strength);
     this.world.onDemo = (car, by) => {
+      if (!this.opts.authoritative) return; // en el cliente las estadisticas llegan del servidor
       const p = this.players.get(by.id);
       if (p) { p.demos++; p.points += 25; }
     };
@@ -143,10 +144,11 @@ export class Game {
       case PHASE.COUNTDOWN: {
         w.step(dt, true);
         this.phaseTimer -= dt;
-        if (this.phaseTimer <= 0 && this.opts.authoritative) {
+        if (this.phaseTimer <= 0) {
+          // el cliente tambien arranca solo al acabar la cuenta atras (asi no pierde el saque)
           this.phase = PHASE.PLAY;
           this.phaseTimer = 0;
-          this.events.push({ type: 'go' });
+          if (this.opts.authoritative) this.events.push({ type: 'go' });
         }
         break;
       }

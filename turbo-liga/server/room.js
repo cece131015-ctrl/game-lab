@@ -12,7 +12,7 @@ function sanitizeSettings(s, prev = {}) {
   const out = { teamSize: 2, bots: true, difficulty: 'pro', matchTime: 300, ...prev };
   if (s.teamSize !== undefined) out.teamSize = Math.max(1, Math.min(3, Number(s.teamSize) | 0 || 2));
   if (s.bots !== undefined) out.bots = !!s.bots;
-  if (s.difficulty !== undefined && DIFFICULTIES[s.difficulty]) out.difficulty = s.difficulty;
+  if (typeof s.difficulty === 'string' && Object.prototype.hasOwnProperty.call(DIFFICULTIES, s.difficulty)) out.difficulty = s.difficulty;
   if (s.matchTime !== undefined) out.matchTime = [120, 180, 300, 420, 600].includes(Number(s.matchTime)) ? Number(s.matchTime) : 300;
   return out;
 }
@@ -182,11 +182,11 @@ class Match {
     const s = this.room.settings;
     if (client) {
       this.game.addPlayer(id, { team, name: client.name, carType: client.carType, colors: client.colors });
-      this.slots.set(id, { clientId: client.id, bot: null, queue: [], lastSeq: 0, lastQueued: 0 });
+      this.slots.set(id, { clientId: client.id, bot: null, queue: [], lastSeq: 0, lastQueued: 0, starved: 0 });
     } else {
       const name = `${BOT_NAMES[this.botNameIdx++ % BOT_NAMES.length]} (bot)`;
       this.game.addPlayer(id, { team, name, isBot: true, carType: CAR_TYPES[id % CAR_TYPES.length], colors: { primary: id % 6 }, difficulty: s.difficulty });
-      this.slots.set(id, { clientId: null, bot: new Bot(id, s.difficulty), queue: [], lastSeq: 0, lastQueued: 0 });
+      this.slots.set(id, { clientId: null, bot: new Bot(id, s.difficulty), queue: [], lastSeq: 0, lastQueued: 0, starved: 0 });
     }
     return id;
   }
@@ -210,6 +210,19 @@ class Match {
 
   sendStartAll() {
     for (const c of this.room.members.values()) c.send(this.startMsg(c));
+    this.broadcastStats();
+  }
+
+  statsMsg() {
+    return {
+      t: 'stats',
+      players: this.game.playerList().map((p) => ({ id: p.id, goals: p.goals, assists: p.assists, saves: p.saves, shots: p.shots, demos: p.demos, points: p.points })),
+    };
+  }
+
+  broadcastStats() {
+    this.room.broadcast(this.statsMsg());
+    this.lastStatsAt = performance.now();
   }
 
   broadcastRoster() {
@@ -254,6 +267,11 @@ class Match {
     }
     if (assigned == null) this.room.teams.set(client.id, -1);
     client.send(this.startMsg(client));
+    client.send(this.statsMsg());
+    if (this.game.phase === PHASE.ENDED) {
+      const winner = this.game.score[0] > this.game.score[1] ? TEAM_BLUE : TEAM_ORANGE;
+      client.send({ t: 'ev', list: [{ type: 'end', winner, score: [...this.game.score] }] });
+    }
     this.broadcastRoster();
     this.room.broadcastState();
   }
@@ -287,7 +305,8 @@ class Match {
     const id = this.carOf(client.id);
     if (id == null) return;
     const slot = this.slots.get(id);
-    const first = Number(msg.s) | 0;
+    const first = Number(msg.s);
+    if (!Number.isInteger(first) || first < 0) return;
     const list = msg.c.slice(0, 64);
     for (let i = 0; i < list.length; i++) {
       const seq = first + i;
@@ -305,12 +324,30 @@ class Match {
   }
 
   loop() {
+    try {
+      this.step();
+    } catch (e) {
+      // un fallo de la simulacion termina este partido, nunca el servidor
+      console.error('Error en el partido de la sala', this.room.code, e);
+      this.destroy();
+      if (this.room.match === this) {
+        this.room.match = null;
+        this.room.broadcast({ t: 'chat', system: true, text: 'El partido se ha detenido por un error' });
+        this.room.broadcast({ t: 'lobby' });
+        this.room.broadcastState();
+      }
+    }
+  }
+
+  step() {
     const now = performance.now();
     this.acc += Math.min(now - this.lastTime, 250) / 1000;
     this.lastTime = now;
     const game = this.game;
     let ticks = 0;
-    while (this.acc >= DT && ticks < 12) {
+    // en el navegador del anfitrion el hilo tambien renderiza: permitir recuperar mas ticks por llamada
+    const maxTicks = typeof window !== 'undefined' ? 48 : 12;
+    while (this.acc >= DT && ticks < maxTicks) {
       for (const [id, slot] of this.slots) {
         const car = game.world.getCar(id);
         if (!car) continue;
@@ -321,19 +358,31 @@ class Match {
           const inp = slot.queue.shift();
           unpackControls(inp.c, car.controls);
           slot.lastSeq = inp.seq;
+          slot.starved = 0;
+        } else if (++slot.starved > 30) {
+          // sin entradas durante 0,25 s (pestaña oculta, corte): soltar los mandos
+          const c = car.controls;
+          c.throttle = c.steer = c.pitch = c.yaw = c.roll = 0;
+          c.jump = c.boost = c.handbrake = false;
         }
       }
       game.step(DT);
       if (game.events.length) {
         this.room.broadcast({ t: 'ev', list: game.events.map(compactEvent) });
-        for (const e of game.events) if (e.type === 'end') this.endedAt = now;
+        let statsChanged = false;
+        for (const e of game.events) {
+          if (e.type === 'end') this.endedAt = now;
+          if (e.type === 'goal' || e.type === 'save' || e.type === 'shot' || e.type === 'demo' || e.type === 'end') statsChanged = true;
+        }
         game.events.length = 0;
+        if (statsChanged) this.broadcastStats();
       }
       if (game.world.tick % SNAPSHOT_EVERY === 0) this.sendSnapshot();
       this.acc -= DT;
       ticks++;
     }
-    if (ticks >= 12) this.acc = 0;
+    if (ticks >= maxTicks) this.acc = 0;
+    if (now - (this.lastStatsAt || 0) > 2000) this.broadcastStats();
     // volver a la sala automaticamente un rato despues del final
     if (this.endedAt && now - this.endedAt > 90000 && this.room.match === this) {
       this.destroy();

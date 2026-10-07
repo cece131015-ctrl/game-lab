@@ -5,6 +5,8 @@ import { Hud, statsTable, esc } from './hud.js';
 import { LocalSession } from './localSession.js';
 import { NetClient, OnlineSession } from './net.js';
 import { Voice } from './voice.js';
+import { createLocalHost } from './localHost.js';
+import { joinP2P } from './p2p.js';
 import { loadSettings, saveSettings } from './settings.js';
 import { CAR_TYPES, getCarConfig } from '../shared/cars.js';
 import { PHASE } from '../shared/game.js';
@@ -33,6 +35,7 @@ let session = null;
 let net = null;
 let room = null;
 let voice = null;
+let localHost = null; // anfitrion sin servidor ejecutandose en esta pagina
 let screen = 'main';
 let screenStack = [];
 let lastRoster = -1;
@@ -50,7 +53,14 @@ function showScreen(name, push = true) {
   for (const s of $$('.screen')) s.classList.toggle('active', s.dataset.screen === name);
   if (name === 'garage') { buildGarage(); renderer.setPreview(settings.carType, settings.colors); } else renderer.clearPreview();
   if (name === 'settings') syncSettingsUI();
-  if (name === 'online') $('input-name').value = settings.name;
+  if (name === 'online') {
+    $('input-name').value = settings.name;
+    hasServer().then((srv) => {
+      $('online-mode').textContent = srv
+        ? 'Conectado al servidor de salas.'
+        : 'Modo sin servidor: quien crea la sala hace de anfitrión desde su navegador y los demás se conectan directamente (hace falta internet). Comparte el código con tus amigos.';
+    });
+  }
   input.enabled = false;
 }
 
@@ -411,18 +421,69 @@ function wsUrl() {
 
 function setStatus(text) { $('online-status').textContent = text || ''; }
 
-async function ensureNet() {
-  if (net && net.connected) return true;
-  setStatus('Conectando con el servidor…');
-  net = new NetClient(wsUrl());
-  bindNet(net);
+const P2P_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] }];
+
+// ¿Hay un servidor de salas Node detras de esta pagina? Si no (por ejemplo, el HTML abierto con
+// doble clic), las salas funcionan sin servidor: el navegador del anfitrion hace de servidor.
+let serverCheck = null;
+function hasServer() {
+  if (params.get('server')) return Promise.resolve(true);
+  if (params.has('p2p') || location.protocol === 'file:') return Promise.resolve(false);
+  if (!serverCheck) {
+    serverCheck = (async () => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 2000);
+        const r = await fetch('healthz', { signal: ctrl.signal, cache: 'no-store' });
+        clearTimeout(t);
+        const j = await r.json();
+        return !!j.ok;
+      } catch { return false; }
+    })();
+  }
+  return serverCheck;
+}
+
+function closeNet() {
+  if (net) { const n = net; net = null; n.close(); }
+  if (localHost) { localHost.destroy(); localHost = null; }
+}
+
+// mode: 'create' o 'join' (code)
+async function ensureNet(mode, code) {
+  const server = await hasServer();
+  if (server && net && net.connected && net.kind === 'server') return true;
+  closeNet();
+  let n;
+  if (server) {
+    setStatus('Conectando con el servidor…');
+    n = new NetClient(wsUrl());
+    n.kind = 'server';
+  } else if (mode === 'create') {
+    setStatus('Creando sala sin servidor (tu navegador será el anfitrión)…');
+    n = new NetClient(async () => {
+      localHost = await createLocalHost(P2P_ICE);
+      return localHost.socket;
+    });
+    n.kind = 'host';
+  } else {
+    setStatus('Buscando la sala del anfitrión…');
+    n = new NetClient(() => joinP2P(code, P2P_ICE));
+    n.kind = 'guest';
+  }
+  net = n;
+  bindNet(n);
   try {
-    await net.connect(playerProfile());
+    await n.connect(playerProfile());
     setStatus('');
     return true;
-  } catch {
-    setStatus('No se pudo conectar con el servidor de salas. ¿Está arrancado "npm start"?');
-    net = null;
+  } catch (e) {
+    if (net === n) net = null;
+    if (localHost && n.kind === 'host') { localHost.destroy(); localHost = null; }
+    if (server) setStatus('No se pudo conectar con el servidor de salas. ¿Está arrancado "npm start"?');
+    else if (n.kind === 'guest') setStatus('No se encontró la sala. Revisa el código y que el anfitrión siga en la sala (hace falta internet).');
+    else setStatus('No se pudo crear la sala sin servidor. Comprueba tu conexión a internet.');
+    console.warn('conexion', e);
     return false;
   }
 }
@@ -449,11 +510,14 @@ function bindNet(n) {
   });
   n.on('rtc', (msg) => { if (voice) voice.handleSignal(msg.from, msg.data); });
   n.on('start', (msg) => {
+    // cerrar la sesion anterior antes de crear la nueva (no debe quitarle sus manejadores)
+    if (session) { session.destroy(); session = null; }
     startSession(new OnlineSession(n, msg));
     if (msg.you == null) toast('Estás viendo el partido como espectador');
   });
   n.on('roster', (msg) => { if (session?.online) session.updateRoster(msg.players, msg.you); });
   n.on('ev', (msg) => { if (session?.online) session.pushServerEvents(msg.list); });
+  n.on('stats', (msg) => { if (session?.online) session.applyStats(msg.players); });
   n.on('lobby', () => {
     endSession();
     showScreen('lobby', false);
@@ -461,7 +525,8 @@ function bindNet(n) {
   });
   n.on('close', () => {
     if (net !== n) return;
-    toast('Se perdió la conexión con el servidor', 4000);
+    toast(n.kind === 'guest' ? 'El anfitrión ha cerrado la sala o se perdió la conexión' : 'Se perdió la conexión con el servidor', 4000);
+    if (localHost && n.kind === 'host') { localHost.destroy(); localHost = null; }
     const wasInRoom = !!room;
     if (session?.online) endSession();
     stopVoice();
@@ -483,7 +548,7 @@ $('btn-create-room').addEventListener('click', async () => {
   audio.ensure();
   settings.name = $('input-name').value.trim().slice(0, 16) || settings.name;
   saveSettings(settings);
-  if (!(await ensureNet())) return;
+  if (!(await ensureNet('create'))) return;
   sendProfile();
   net.send({ t: 'create', settings: { teamSize: opts.roomTeamSize, bots: !!opts.roomBots, difficulty: opts.roomDifficulty, matchTime: 300 } });
 });
@@ -494,7 +559,7 @@ $('btn-join-room').addEventListener('click', async () => {
   if (code.length < 4) { setStatus('Escribe el código de la sala'); return; }
   settings.name = $('input-name').value.trim().slice(0, 16) || settings.name;
   saveSettings(settings);
-  if (!(await ensureNet())) return;
+  if (!(await ensureNet('join', code))) return;
   sendProfile();
   net.send({ t: 'join', code });
 });
@@ -504,13 +569,19 @@ function leaveRoom() {
   if (net) net.send({ t: 'leave' });
   stopVoice();
   room = null;
+  // sin servidor: al salir se cierra la conexion (y, si eras el anfitrion, la sala)
+  if (net && net.kind !== 'server') closeNet();
   history.replaceState(null, '', location.pathname + (params.get('server') ? `?server=${encodeURIComponent(params.get('server'))}` : ''));
 }
 $('btn-leave-room').addEventListener('click', () => { leaveRoom(); showScreen('online', false); screenStack = ['main']; });
 
 $('btn-copy-link').addEventListener('click', async () => {
-  const url = `${location.origin}${location.pathname}?sala=${room?.code || ''}${params.get('server') ? `&server=${encodeURIComponent(params.get('server'))}` : ''}`;
-  try { await navigator.clipboard.writeText(url); toast('Enlace copiado. ¡Pásaselo a tus amigos!'); } catch { prompt('Copia este enlace:', url); }
+  const code = room?.code || '';
+  // con el HTML abierto como archivo no hay enlace que compartir: se copia el codigo
+  const text = location.protocol === 'file:'
+    ? `¡Juega conmigo a Turbo Liga! Abre turbo-liga.html, entra en "Online con amigos" y únete con el código ${code}`
+    : `${location.origin}${location.pathname}?sala=${code}${params.get('server') ? `&server=${encodeURIComponent(params.get('server'))}` : ''}`;
+  try { await navigator.clipboard.writeText(text); toast(location.protocol === 'file:' ? 'Código copiado. ¡Pásaselo a tus amigos!' : 'Enlace copiado. ¡Pásaselo a tus amigos!'); } catch { prompt('Copia esto:', text); }
 });
 
 for (const b of $$('[data-team]')) {
@@ -535,7 +606,7 @@ function renderLobby() {
     for (const b of seg.children) b.disabled = !isHost;
   };
   setSeg('lobbyTeamSize', s.teamSize); setSeg('lobbyBots', s.bots ? 1 : 0); setSeg('lobbyDifficulty', s.difficulty); setSeg('lobbyTime', s.matchTime);
-  const li = (m) => `<li class="${m.id === net.id ? 'me' : ''} ${voice?.isSpeaking(m.id) ? 'speaking' : ''}" data-id="${m.id}">${m.mic ? '🎙️' : '🔇'} ${esc(m.name)}${m.id === room.host ? ' 👑' : ''}<span class="tag">${m.id === net.id ? 'tú' : ''}</span></li>`;
+  const li = (m) => `<li class="${m.id === net.id ? 'me' : ''} ${voice?.isSpeaking(m.id) ? 'speaking' : ''}" data-id="${Number(m.id) | 0}">${m.mic ? '🎙️' : '🔇'} ${esc(m.name)}${m.id === room.host ? ' 👑' : ''}<span class="tag">${m.id === net.id ? 'tú' : ''}</span></li>`;
   for (const [team, el] of [[0, 'lobby-blue'], [1, 'lobby-orange'], [-1, 'lobby-spec']]) {
     const members = room.members.filter((m) => m.team === team);
     let html = members.map(li).join('');
@@ -543,7 +614,9 @@ function renderLobby() {
     $(el).innerHTML = html;
   }
   $('btn-start-match').classList.toggle('hidden', !isHost);
-  $('lobby-wait').textContent = room.inGame ? 'Partido en curso…' : isHost ? 'Tú eres el anfitrión' : 'Esperando a que el anfitrión empiece…';
+  $('lobby-wait').textContent = room.inGame ? 'Partido en curso…'
+    : localHost ? 'Eres el anfitrión: no cierres ni minimices esta pestaña'
+      : isHost ? 'Tú eres el anfitrión' : 'Esperando a que el anfitrión empiece…';
   $('btn-start-match').disabled = room.inGame;
 }
 

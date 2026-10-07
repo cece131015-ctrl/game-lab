@@ -8,7 +8,9 @@
     "dev": "node scripts/dev.js",
     "build": "vite build",
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:single": "vite build --config vite.single.config.js && node scripts/copy-single.js",
+    "build:all": "npm run build && npm run build:single"
   },
   "engines": {
     "node": ">=18"
