@@ -24,7 +24,22 @@ Fútbol con coches en 3D al estilo Rocket League, para el navegador. Incluye bot
 - **Cámara** como la de RL: campo de visión de 110°, distancia 270, altura 110 y cámara de balón (`C`).
 - **Controles** de teclado y ratón, mando (Xbox/PlayStation con la distribución estándar) y controles táctiles en el móvil.
 
-## Cómo jugar en tu ordenador
+## La forma más fácil: un solo archivo HTML
+
+**[`turbo-liga.html`](turbo-liga.html)** lleva el juego entero dentro: gráficos, físicas, bots, menús, salas y voz. No hace falta instalar nada:
+
+1. Descarga `turbo-liga.html`.
+2. Ábrelo con doble clic en Chrome, Edge o Firefox.
+3. Contra bots y en entrenamiento libre funciona **sin internet**.
+4. **Salas con amigos sin servidor:** cada amigo abre su copia del archivo. Uno pulsa *Online con amigos → Crear sala*; su navegador hace de servidor de la sala. Los demás escriben el código en *Unirse*. El juego y la voz van directamente de navegador a navegador (WebRTC). Hace falta internet, porque los navegadores se encuentran a través del servicio público de PeerJS.
+   - El anfitrión no debe cerrar ni minimizar su pestaña mientras se juega.
+   - Al abrir el archivo localmente, el navegador permite usar el micrófono sin HTTPS.
+
+Para volver a generar el archivo: `npm run build:single`.
+
+Para usar un PeerServer propio en lugar del público, añade `?peer=host:puerto` a la URL.
+
+## Cómo jugar en tu ordenador (con servidor)
 
 Necesitas [Node.js](https://nodejs.org) 18 o superior.
 
@@ -109,8 +124,12 @@ turbo-liga/
 │   ├── world.js       Colisiones coche-balón, coche-coche, demoliciones, pads
 │   ├── game.js        Partido: saque, goles, tiempo, prórroga, estadísticas
 │   └── bot.js         IA de los bots
-├── src/client/        Navegador: three.js, HUD, menús, sonido, red, voz
-└── server/            Servidor Node: archivos estáticos, salas, partido autoritativo, señalización WebRTC
+├── src/client/        Navegador: three.js, HUD, menús, sonido, red, voz, salas P2P
+├── server/
+│   ├── hub.js         Salas y mensajes; funciona en Node y dentro del navegador del anfitrión
+│   ├── room.js        Sala, equipos y partido autoritativo a 120 Hz
+│   └── index.js       Servidor HTTP + WebSocket
+└── turbo-liga.html    El juego completo en un solo archivo
 ```
 
 - **Red**: el servidor simula el partido a 120 Hz y manda el estado 30 veces por segundo. Cada cliente predice su propio coche y el resto del mundo, y cuando llega el estado del servidor vuelve a ese punto y repite sus entradas pendientes (*rollback*, como en RL). Las correcciones se suavizan para que no se noten saltos.
