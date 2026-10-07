@@ -60,11 +60,13 @@ const BASE = {
 
 export const CAR_TYPES = Object.keys(BASE);
 
-const cache = {};
+const cache = new Map();
 
 export function getCarConfig(type) {
-  if (!BASE[type]) type = 'octane';
-  if (cache[type]) return cache[type];
+  // Solo claves propias (evita 'constructor', '__proto__', etc.)
+  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(BASE, type)) type = 'octane';
+  const hit = cache.get(type);
+  if (hit) return hit;
   const b = BASE[type];
   const [L, W, H] = b.hitbox;
   // Inercia de una caja por unidad de masa (uu^2). Ejes locales: X adelante, Y izquierda, Z arriba.
@@ -101,6 +103,6 @@ export function getCarConfig(type) {
     wheels,
     wheelBase,
   };
-  cache[type] = cfg;
+  cache.set(type, cfg);
   return cfg;
 }

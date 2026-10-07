@@ -12,6 +12,8 @@ const _r = new V3(), _pv = new V3(), _n = new V3();
 const _upDir = new V3(), _fp = new V3(), _lp = new V3();
 const _dir = new V3(), _hp = new V3();
 
+const WORLD_CONTACT_SKIN = 1; // uu
+
 export function emptyControls() {
   return { throttle: 0, steer: 0, pitch: 0, yaw: 0, roll: 0, jump: false, boost: false, handbrake: false };
 }
@@ -58,8 +60,8 @@ export class Car {
   }
 
   setType(type) {
-    this.type = type;
     this.cfg = getCarConfig(type);
+    this.type = this.cfg.type; // tipo normalizado (nunca el texto recibido)
   }
 
   resetState() {
@@ -506,13 +508,15 @@ export class Car {
     if (this.isDemoed) return;
     const cfg = this.cfg;
     const pts = getHitboxSamplePoints(cfg);
-    let deepest = 0;
+    // Piel de contacto: se detecta el contacto un poco antes de penetrar para que
+    // worldContact no parpadee al reposar (la correccion deja el coche en d = 0)
+    let deepest = WORLD_CONTACT_SKIN;
     for (let i = 0; i < pts.length; i++) {
       const lp = pts[i];
       _r.copy(lp).applyQuat(this.quat);
       const px = this.pos.x + _r.x, py = this.pos.y + _r.y, pz = this.pos.z + _r.z;
       const d = arenaDist(px, py, pz);
-      if (d >= 0) continue;
+      if (d >= WORLD_CONTACT_SKIN) continue;
       const n = arenaNormal(px, py, pz, _n);
       if (d < deepest) { deepest = d; this.worldNormal.copy(n); }
       this.worldContact = true;
@@ -537,7 +541,7 @@ export class Car {
         this.applyImpulseAt(_tmp2, _r);
       }
     }
-    // correccion de posicion (hasta 3 pasadas para esquinas)
+    // correccion de posicion solo si hay penetracion real (hasta 3 pasadas para esquinas)
     for (let pass = 0; pass < 3 && deepest < 0; pass++) {
       let worst = 0;
       for (let i = 0; i < pts.length; i++) {
