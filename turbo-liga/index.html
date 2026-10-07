@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Turbo Liga 3D — fútbol con coches</title>
+  <meta name="description" content="Fútbol con coches en 3D estilo Rocket League: bots, salas online con amigos y chat de voz." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- fuentes sin bloquear la carga (el juego funciona aunque no haya acceso a Google Fonts) -->
+  <link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+  <link rel="stylesheet" href="/src/client/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="view"></div>
+
+    <!-- ===================== HUD ===================== -->
+    <div id="hud" class="hidden">
+      <div id="scoreboard">
+        <div class="sb-team blue"><span id="sb-blue-name">AZUL</span><b id="score-blue">0</b></div>
+        <div id="clock">5:00</div>
+        <div class="sb-team orange"><b id="score-orange">0</b><span id="sb-orange-name">NARANJA</span></div>
+      </div>
+      <div id="net-stats"></div>
+      <div id="feed"></div>
+      <div id="center-msg"></div>
+      <div id="sub-msg"></div>
+      <div id="voice-panel"></div>
+      <div id="boost-meter">
+        <svg viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="50" class="bm-bg" />
+          <circle cx="60" cy="60" r="50" class="bm-fg" id="boost-ring" />
+        </svg>
+        <div class="bm-val"><b id="boost-value">33</b></div>
+      </div>
+      <div id="speedo"><b id="speed-value">0</b> km/h</div>
+      <div id="chat">
+        <div id="chat-log"></div>
+        <input id="chat-input" class="hidden" maxlength="140" placeholder="Escribe y pulsa Enter…" autocomplete="off" />
+      </div>
+      <div id="hud-hint"></div>
+      <div id="stats-table" class="hidden"></div>
+      <div id="touch-controls" class="hidden">
+        <div id="tc-stick"><div id="tc-knob"></div></div>
+        <button data-tc="jump">SALTO</button>
+        <button data-tc="boost">TURBO</button>
+        <button data-tc="drift">DERRAPE</button>
+      </div>
+    </div>
+
+    <!-- ===================== MENUS ===================== -->
+    <div id="menu">
+      <!-- Principal -->
+      <section class="screen" data-screen="main">
+        <div class="logo">
+          <div class="logo-top">TURBO</div>
+          <div class="logo-bottom">LIGA <span>3D</span></div>
+          <div class="logo-sub">fútbol con coches · físicas de Rocket League</div>
+        </div>
+        <div class="main-buttons">
+          <button class="btn big primary" data-go="bots">🤖 Jugar contra bots</button>
+          <button class="btn big orange" data-go="online">🎙️ Online con amigos</button>
+          <button class="btn big" id="btn-freeplay">⚽ Entrenamiento libre</button>
+          <div class="row">
+            <button class="btn" data-go="garage">🚗 Garaje</button>
+            <button class="btn" data-go="controls">🎮 Controles</button>
+            <button class="btn" data-go="settings">⚙️ Ajustes</button>
+          </div>
+        </div>
+        <div class="footer-note">Física basada en <a href="https://github.com/ZealanL/RocketSim" target="_blank" rel="noopener">RocketSim</a> (MIT). Juego de fans, sin relación con Psyonix/Epic.</div>
+      </section>
+
+      <!-- Contra bots -->
+      <section class="screen panel" data-screen="bots">
+        <h2>Partido contra bots</h2>
+        <div class="field"><label>Modo</label>
+          <div class="seg" data-opt="teamSize"><button data-v="1" class="on">1 vs 1</button><button data-v="2">2 vs 2</button><button data-v="3">3 vs 3</button></div></div>
+        <div class="field"><label>Dificultad</label>
+          <div class="seg" data-opt="difficulty"><button data-v="rookie">Principiante</button><button data-v="pro" class="on">Pro</button><button data-v="allstar">Leyenda</button></div></div>
+        <div class="field"><label>Duración</label>
+          <div class="seg" data-opt="matchTime"><button data-v="180">3 min</button><button data-v="300" class="on">5 min</button><button data-v="600">10 min</button></div></div>
+        <div class="field"><label>Tu equipo</label>
+          <div class="seg" data-opt="team"><button data-v="0" class="on blue">Azul</button><button data-v="1" class="orange">Naranja</button></div></div>
+        <div class="actions">
+          <button class="btn" data-go="main">← Volver</button>
+          <button class="btn primary" id="btn-start-bots">¡Jugar!</button>
+        </div>
+      </section>
+
+      <!-- Online -->
+      <section class="screen panel" data-screen="online">
+        <h2>Online con amigos</h2>
+        <div class="field"><label>Tu nombre</label><input id="input-name" maxlength="16" placeholder="Piloto" /></div>
+        <div class="two-col">
+          <div class="card">
+            <h3>Crear sala</h3>
+            <div class="field"><label>Modo</label>
+              <div class="seg" data-opt="roomTeamSize"><button data-v="1">1v1</button><button data-v="2" class="on">2v2</button><button data-v="3">3v3</button></div></div>
+            <div class="field"><label>Rellenar con bots</label>
+              <div class="seg" data-opt="roomBots"><button data-v="1" class="on">Sí</button><button data-v="0">No</button></div></div>
+            <div class="field"><label>Bots</label>
+              <div class="seg" data-opt="roomDifficulty"><button data-v="rookie">Principiante</button><button data-v="pro" class="on">Pro</button><button data-v="allstar">Leyenda</button></div></div>
+            <button class="btn primary wide" id="btn-create-room">Crear sala</button>
+          </div>
+          <div class="card">
+            <h3>Unirse a una sala</h3>
+            <div class="field"><label>Código de sala</label><input id="input-code" maxlength="6" placeholder="ABC123" class="code-input" /></div>
+            <button class="btn orange wide" id="btn-join-room">Unirse</button>
+            <p class="hint">El micrófono se activa al entrar en la sala. Puedes silenciarlo con <kbd>M</kbd>.</p>
+          </div>
+        </div>
+        <div class="status" id="online-status"></div>
+        <div class="actions"><button class="btn" data-go="main">← Volver</button></div>
+      </section>
+
+      <!-- Sala / Lobby -->
+      <section class="screen panel wide-panel" data-screen="lobby">
+        <div class="lobby-head">
+          <div>
+            <div class="muted">Código de sala</div>
+            <div class="room-code" id="lobby-code">------</div>
+          </div>
+          <div class="lobby-head-btns">
+            <button class="btn small" id="btn-copy-link">📋 Copiar enlace</button>
+            <button class="btn small" id="btn-mic">🎙️ Micrófono</button>
+          </div>
+        </div>
+        <div class="mic-meter"><div id="mic-level"></div><span id="mic-status">Micrófono desactivado</span></div>
+        <div class="teams">
+          <div class="team-col blue"><h3>Equipo Azul</h3><ul id="lobby-blue"></ul><button class="btn small blue" data-team="0">Unirse a Azul</button></div>
+          <div class="team-col spec"><h3>Espectadores</h3><ul id="lobby-spec"></ul><button class="btn small" data-team="-1">Ver partido</button></div>
+          <div class="team-col orange"><h3>Equipo Naranja</h3><ul id="lobby-orange"></ul><button class="btn small orange" data-team="1">Unirse a Naranja</button></div>
+        </div>
+        <div class="host-settings" id="host-settings">
+          <div class="field inline"><label>Modo</label>
+            <div class="seg" data-opt="lobbyTeamSize"><button data-v="1">1v1</button><button data-v="2">2v2</button><button data-v="3">3v3</button></div></div>
+          <div class="field inline"><label>Bots</label>
+            <div class="seg" data-opt="lobbyBots"><button data-v="1">Sí</button><button data-v="0">No</button></div></div>
+          <div class="field inline"><label>Dificultad</label>
+            <div class="seg" data-opt="lobbyDifficulty"><button data-v="rookie">Princ.</button><button data-v="pro">Pro</button><button data-v="allstar">Leyenda</button></div></div>
+          <div class="field inline"><label>Duración</label>
+            <div class="seg" data-opt="lobbyTime"><button data-v="180">3m</button><button data-v="300">5m</button><button data-v="600">10m</button></div></div>
+        </div>
+        <div class="lobby-chat">
+          <div id="lobby-chat-log"></div>
+          <input id="lobby-chat-input" maxlength="140" placeholder="Chat de la sala…" autocomplete="off" />
+        </div>
+        <div class="actions">
+          <button class="btn" id="btn-leave-room">Salir</button>
+          <span class="muted" id="lobby-wait"></span>
+          <button class="btn primary" id="btn-start-match">Empezar partido</button>
+        </div>
+      </section>
+
+      <!-- Garaje -->
+      <section class="screen panel garage" data-screen="garage">
+        <h2>Garaje</h2>
+        <div class="field"><label>Coche</label><div class="car-grid" id="car-grid"></div></div>
+        <div class="field"><label>Color (equipo azul / naranja)</label><div class="swatches" id="primary-swatches"></div></div>
+        <div class="field"><label>Color de acento</label><div class="swatches" id="accent-swatches"></div></div>
+        <div class="actions"><button class="btn primary" data-go="main">Guardar</button></div>
+      </section>
+
+      <!-- Controles -->
+      <section class="screen panel" data-screen="controls">
+        <h2>Controles</h2>
+        <table class="controls-table">
+          <tr><th>Acción</th><th>Teclado / ratón</th><th>Mando</th></tr>
+          <tr><td>Acelerar / frenar</td><td><kbd>W</kbd> / <kbd>S</kbd></td><td>RT / LT</td></tr>
+          <tr><td>Girar / guiñada</td><td><kbd>A</kbd> <kbd>D</kbd></td><td>Stick izq.</td></tr>
+          <tr><td>Cabeceo (en el aire)</td><td><kbd>W</kbd> <kbd>S</kbd></td><td>Stick izq.</td></tr>
+          <tr><td>Saltar / doble salto / flip</td><td><kbd>Espacio</kbd> o clic der.</td><td>A</td></tr>
+          <tr><td>Turbo</td><td><kbd>Shift</kbd> o clic izq.</td><td>B</td></tr>
+          <tr><td>Derrape / giro aéreo libre</td><td><kbd>Ctrl</kbd> o <kbd>X</kbd></td><td>X</td></tr>
+          <tr><td>Giro aéreo izq. / der.</td><td><kbd>Q</kbd> / <kbd>E</kbd></td><td>LB / RB</td></tr>
+          <tr><td>Cámara balón on/off</td><td><kbd>C</kbd></td><td>Y</td></tr>
+          <tr><td>Marcador</td><td><kbd>Tab</kbd></td><td>View</td></tr>
+          <tr><td>Silenciar micrófono</td><td><kbd>M</kbd></td><td>—</td></tr>
+          <tr><td>Pulsar para hablar (si está activado)</td><td><kbd>V</kbd></td><td>—</td></tr>
+          <tr><td>Chat</td><td><kbd>T</kbd> / <kbd>Enter</kbd></td><td>—</td></tr>
+          <tr><td>Entrenamiento: balón / coche</td><td><kbd>R</kbd> / <kbd>F</kbd></td><td>—</td></tr>
+          <tr><td>Pausa / menú</td><td><kbd>Esc</kbd></td><td>Start</td></tr>
+        </table>
+        <div class="actions"><button class="btn" data-go="main">← Volver</button></div>
+      </section>
+
+      <!-- Ajustes -->
+      <section class="screen panel" data-screen="settings">
+        <h2>Ajustes</h2>
+        <div class="field"><label>Cámara balón por defecto</label>
+          <div class="seg" data-setting="ballCam"><button data-v="1">Sí</button><button data-v="0">No</button></div></div>
+        <div class="field"><label>Campo de visión: <b id="fov-val">110</b>°</label><input type="range" min="70" max="110" step="1" id="set-fov" /></div>
+        <div class="field"><label>Distancia de cámara: <b id="dist-val">270</b></label><input type="range" min="200" max="400" step="5" id="set-dist" /></div>
+        <div class="field"><label>Vibración de cámara</label>
+          <div class="seg" data-setting="shake"><button data-v="1">Sí</button><button data-v="0">No</button></div></div>
+        <div class="field"><label>Calidad gráfica (requiere recargar)</label>
+          <div class="seg" data-setting="quality"><button data-v="low">Baja</button><button data-v="medium">Media</button><button data-v="high">Alta</button></div></div>
+        <div class="field"><label>Volumen efectos: <b id="vol-val">70</b>%</label><input type="range" min="0" max="100" step="1" id="set-volume" /></div>
+        <div class="field"><label>Volumen voz: <b id="vvol-val">100</b>%</label><input type="range" min="0" max="150" step="1" id="set-voice-volume" /></div>
+        <div class="field"><label>Micrófono</label><select id="set-mic-device"><option value="">Predeterminado</option></select></div>
+        <div class="field"><label>Modo de micrófono</label>
+          <div class="seg" data-setting="micMode"><button data-v="open">Siempre abierto</button><button data-v="ptt">Pulsar para hablar (V)</button></div></div>
+        <div class="actions"><button class="btn primary" data-go="back">Listo</button></div>
+      </section>
+
+      <!-- Pausa -->
+      <section class="screen panel small-panel" data-screen="pause">
+        <h2>Pausa</h2>
+        <div class="stack">
+          <button class="btn primary wide" id="btn-resume">Continuar</button>
+          <button class="btn wide" id="btn-restart">Reiniciar partido</button>
+          <button class="btn wide" data-go="settings">Ajustes</button>
+          <button class="btn wide" data-go="controls">Controles</button>
+          <button class="btn wide danger" id="btn-quit">Salir al menú</button>
+        </div>
+      </section>
+
+      <!-- Final -->
+      <section class="screen panel wide-panel" data-screen="end">
+        <h2 id="end-title">¡Victoria!</h2>
+        <div id="end-score" class="end-score"></div>
+        <div id="end-stats"></div>
+        <div class="actions">
+          <button class="btn" id="btn-end-menu">Menú</button>
+          <button class="btn primary" id="btn-rematch">Revancha</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast"></div>
+    <div id="loading">Cargando…</div>
+  </div>
+  <script type="module" src="/src/client/main.js"></script>
+</body>
+</html>
