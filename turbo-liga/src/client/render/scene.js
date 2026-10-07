@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildArena, BLUE, ORANGE } from './arenaMesh.js';
-import { buildCarModel, updateCarModel } from './carMesh.js';
+import { buildCarModel, updateCarModel, disposeObject } from './carMesh.js';
 import { Particles, Shockwaves } from './effects.js';
 import { CameraController } from './camera.js';
 import { makeBallTexture, makeSkyTexture, makeLabelTexture, makeGlowTexture } from './textures.js';
@@ -128,7 +128,8 @@ export class GameRenderer {
     const c = this.cars.get(id);
     if (!c) return;
     this.scene.remove(c.model.group);
-    if (c.label) this.scene.remove(c.label);
+    disposeObject(c.model.group);
+    if (c.label) { this.scene.remove(c.label); disposeObject(c.label); }
     this.cars.delete(id);
   }
 
@@ -148,8 +149,11 @@ export class GameRenderer {
   }
 
   clearPreview() {
-    if (this.preview) this.scene.remove(this.preview.group);
-    if (this.preview) this.camera.clearViewOffset();
+    if (this.preview) {
+      this.scene.remove(this.preview.group);
+      disposeObject(this.preview.group);
+      this.camera.clearViewOffset();
+    }
     this.preview = null;
   }
 

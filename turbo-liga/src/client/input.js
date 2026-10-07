@@ -26,7 +26,9 @@ export class Input {
       this.keys.delete(e.code);
       this.emit('release', e.code);
     });
-    window.addEventListener('blur', () => { this.keys.clear(); this.mouse.left = this.mouse.right = false; });
+    // al perder el foco no llegan los keyup: soltar todo (pulsar para hablar, marcador...)
+    window.addEventListener('blur', () => this.releaseAll());
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.releaseAll(); });
     target.addEventListener('mousedown', (e) => {
       if (e.button === 0) this.mouse.left = true;
       if (e.button === 2) this.mouse.right = true;
@@ -43,8 +45,42 @@ export class Input {
 
   k(...codes) { return codes.some((c) => this.keys.has(c)); }
 
+  releaseAll() {
+    const held = [...this.keys];
+    this.keys.clear();
+    this.mouse.left = this.mouse.right = false;
+    for (const code of held) this.emit('release', code);
+    this.emit('release', 'PadBack');
+  }
+
+  // Lee los mandos y emite los botones de una pulsacion (tambien con los menus abiertos).
+  // Devuelve el mando que conduce, o null.
+  _pollPads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let drive = null;
+    for (const gp of pads) {
+      if (!gp || !gp.connected) continue;
+      const prev = this.padPrev[gp.index] || [];
+      const pressed = gp.buttons.map((x) => x.pressed);
+      this.padPrev[gp.index] = pressed;
+      const edge = (i) => pressed[i] && !prev[i];
+      if (edge(3)) this.emit('press', 'PadY');
+      if (edge(9)) this.emit('press', 'PadStart');
+      if (edge(8)) this.emit('press', 'PadBack');
+      if (!pressed[8] && prev[8]) this.emit('release', 'PadBack');
+      if (drive) continue;
+      const lx = dz(gp.axes[0] || 0), ly = dz(gp.axes[1] || 0);
+      const rt = gp.buttons[7]?.value || 0, lt = gp.buttons[6]?.value || 0;
+      const any = Math.abs(lx) + Math.abs(ly) + rt + lt > 0.05 || pressed.some(Boolean);
+      if (any) this.usingPad = true;
+      if (this.usingPad) drive = gp;
+    }
+    return drive;
+  }
+
   poll() {
     const c = this.controls;
+    const gp = this._pollPads();
     if (!this.enabled) {
       c.throttle = c.steer = c.pitch = c.yaw = c.roll = 0;
       c.jump = c.boost = c.handbrake = false;
@@ -76,16 +112,11 @@ export class Input {
     }
 
     // --- Mando ---
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    for (const gp of pads) {
-      if (!gp || !gp.connected) continue;
+    if (gp) {
       const b = (i) => gp.buttons[i]?.pressed || (gp.buttons[i]?.value || 0) > 0.5;
       const bv = (i) => gp.buttons[i]?.value || 0;
       const lx = dz(gp.axes[0] || 0), ly = dz(gp.axes[1] || 0);
       const rt = bv(7), lt = bv(6);
-      const any = Math.abs(lx) + Math.abs(ly) + rt + lt > 0.05 || gp.buttons.some((x) => x.pressed);
-      if (any) this.usingPad = true;
-      if (!this.usingPad) continue;
       const padAirRoll = b(2);
       c.throttle = rt - lt;
       c.steer = lx;
@@ -97,16 +128,6 @@ export class Input {
       c.jump = b(0);
       c.boost = b(1);
       c.handbrake = padAirRoll;
-      // botones de una pulsacion
-      const prev = this.padPrev[gp.index] || [];
-      const pressed = gp.buttons.map((x) => x.pressed);
-      const edge = (i) => pressed[i] && !prev[i];
-      if (edge(3)) this.emit('press', 'PadY');
-      if (edge(9)) this.emit('press', 'PadStart');
-      if (edge(8)) this.emit('press', 'PadBack');
-      if (!pressed[8] && prev[8]) this.emit('release', 'PadBack');
-      this.padPrev[gp.index] = pressed;
-      break;
     }
     return c;
   }

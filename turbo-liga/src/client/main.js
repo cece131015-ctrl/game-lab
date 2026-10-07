@@ -82,6 +82,8 @@ for (const b of $$('[data-go]')) {
     const to = b.dataset.go;
     if (to === 'back') goBack();
     else if (to === 'main' && screen === 'garage') { saveSettings(settings); showScreen(session ? 'pause' : 'main', false); screenStack = []; }
+    // con un partido en marcha no se vuelve al menu principal, sino a la pausa
+    else if (to === 'main' && session) { showScreen('pause', false); screenStack = []; }
     else showScreen(to);
   });
 }
@@ -163,8 +165,20 @@ function resume() {
   hideMenu();
   screenStack = [];
 }
+// Reiniciar un partido local: la sesion es la misma, asi que hay que anular el final pendiente y la pausa
+function restartLocal() {
+  if (!session || session.online) return;
+  clearTimeout(endTimer);
+  session.restart();
+  session.paused = false;
+  lastRoster = -1;
+  renderer.cam.reset();
+  hud.showStats(false);
+  hideMenu();
+  screenStack = [];
+}
 $('btn-resume').addEventListener('click', resume);
-$('btn-restart').addEventListener('click', () => { if (session && !session.online) { session.restart(); lastRoster = -1; resume(); } });
+$('btn-restart').addEventListener('click', restartLocal);
 $('btn-quit').addEventListener('click', () => {
   const wasOnline = session?.online;
   endSession();
@@ -191,7 +205,7 @@ function showEnd(winner, score) {
 $('btn-rematch').addEventListener('click', () => {
   if (!session) return;
   if (session.online) net.send({ t: 'rematch' });
-  else { session.restart(); lastRoster = -1; hideMenu(); }
+  else restartLocal();
 });
 $('btn-end-menu').addEventListener('click', () => {
   if (session?.online) {
@@ -407,6 +421,11 @@ async function refreshMicDevices() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
   try {
     const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+    // micro guardado que ya no existe (solo se sabe si el navegador da los ids, tras el permiso)
+    if (settings.micDeviceId && devs.some((d) => d.deviceId) && !devs.some((d) => d.deviceId === settings.micDeviceId)) {
+      settings.micDeviceId = '';
+      saveSettings(settings);
+    }
     sel.innerHTML = '<option value="">Predeterminado</option>' + devs.map((d, i) => `<option value="${esc(d.deviceId)}">${esc(d.label || `Micrófono ${i + 1}`)}</option>`).join('');
     sel.value = settings.micDeviceId || '';
   } catch { /* */ }
@@ -640,16 +659,23 @@ $('lobby-chat-input').addEventListener('keydown', (e) => {
 // =============================================================== Voz
 async function startVoice() {
   if (voice) return;
-  voice = new Voice({
+  const v = voice = new Voice({
     send: (to, data) => net && net.send({ t: 'rtc', to, data }),
     iceServers: net.ice,
     onChange: () => { renderLobby(); updateMicUI(); },
+    onDeviceFallback: () => {
+      settings.micDeviceId = '';
+      saveSettings(settings);
+      $('set-mic-device').value = '';
+      toast('No se encontró el micrófono elegido: se usa el predeterminado', 3000);
+    },
   });
   voice.setVolume(settings.voiceVolume);
   voice.setPtt(settings.micMode === 'ptt');
   if (room?.members?.length) voice.setPeers(room.members.map((m) => m.id), net.id);
-  const ok = await voice.enableMic(settings.micDeviceId);
-  if (!ok && voice) toast(voice.micError || 'Micrófono no disponible: podrás escuchar pero no hablar', 4000);
+  const ok = await v.enableMic(settings.micDeviceId);
+  if (voice !== v) return; // se salio de la sala mientras se pedia el micro
+  if (!ok) toast(voice.micError || 'Micrófono no disponible: podrás escuchar pero no hablar', 4000);
   sendMicState();
   updateMicUI();
 }
@@ -700,6 +726,8 @@ if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
   const t = (input.touch = { active: false, steer: 0, throttle: 0, jump: false, boost: false, drift: false });
   const stick = $('tc-stick'), knob = $('tc-knob');
   let stickId = null;
+  // el tactil solo sustituye al teclado mientras hay un dedo en el stick o en un boton
+  const refresh = () => { t.active = stickId !== null || t.jump || t.boost || t.drift; };
   const setStick = (x, y) => {
     const r = stick.getBoundingClientRect();
     let dx = (x - (r.left + r.width / 2)) / (r.width / 2), dy = (y - (r.top + r.height / 2)) / (r.height / 2);
@@ -709,17 +737,25 @@ if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
     t.throttle = -dy;
     knob.style.transform = `translate(${dx * 45}px, ${dy * 45}px)`;
   };
-  stick.addEventListener('touchstart', (e) => { t.active = true; stickId = e.changedTouches[0].identifier; setStick(e.changedTouches[0].clientX, e.changedTouches[0].clientY); e.preventDefault(); }, { passive: false });
+  stick.addEventListener('touchstart', (e) => { stickId = e.changedTouches[0].identifier; refresh(); setStick(e.changedTouches[0].clientX, e.changedTouches[0].clientY); e.preventDefault(); }, { passive: false });
   window.addEventListener('touchmove', (e) => { for (const tt of e.changedTouches) if (tt.identifier === stickId) setStick(tt.clientX, tt.clientY); }, { passive: true });
-  window.addEventListener('touchend', (e) => {
+  const endStick = (e) => {
     for (const tt of e.changedTouches) if (tt.identifier === stickId) { stickId = null; t.steer = 0; t.throttle = 0; knob.style.transform = ''; }
-  });
-  for (const b of tc.querySelectorAll('button')) {
+    refresh();
+  };
+  window.addEventListener('touchend', endStick);
+  window.addEventListener('touchcancel', endStick);
+  for (const b of tc.querySelectorAll('button[data-tc]')) {
     const key = b.dataset.tc;
-    const set = (v) => { t.active = true; t[key === 'drift' ? 'drift' : key] = v; };
+    const set = (v) => { t[key] = v; refresh(); };
     b.addEventListener('touchstart', (e) => { set(true); e.preventDefault(); }, { passive: false });
     b.addEventListener('touchend', (e) => { set(false); e.preventDefault(); }, { passive: false });
+    b.addEventListener('touchcancel', () => set(false));
   }
+  // boton de pausa (sin teclado ni mando no habria forma de abrir el menu)
+  const pauseBtn = $('tc-pause');
+  pauseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); openPause(); }, { passive: false });
+  pauseBtn.addEventListener('click', openPause);
 }
 
 // =============================================================== Arranque

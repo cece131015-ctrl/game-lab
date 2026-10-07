@@ -56,6 +56,20 @@ function extrudeProfile(points, length, height, width, x0, z0, bevel) {
 
 const glowTex = typeof document !== 'undefined' ? makeGlowTexture() : null;
 
+// Libera geometrias, materiales y texturas de un objeto retirado de la escena.
+// No toca lo compartido: la textura del brillo ni la geometria comun de los sprites.
+export function disposeObject(root) {
+  root.traverse((o) => {
+    if (o.geometry && !o.isSprite) o.geometry.dispose();
+    const m = o.material;
+    if (!m) return;
+    for (const mm of Array.isArray(m) ? m : [m]) {
+      if (mm.map && mm.map !== glowTex) mm.map.dispose();
+      mm.dispose();
+    }
+  });
+}
+
 export function buildCarModel(type, teamColor, accentColor) {
   const cfg = getCarConfig(type);
   const st = STYLES[cfg.type] || STYLES.octane;

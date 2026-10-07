@@ -48,6 +48,7 @@ export class CameraController {
   update(dt, car, ballPos, carPos, carQuatForward, carUp) {
     const cam = this.camera;
     const s = this.settings;
+    const wasInit = this.initialized; // tras reset() se colocan posicion, rumbo y mira de golpe
     // direccion deseada
     let targetHeading = this.heading;
     let dirZ = 0;
@@ -64,7 +65,7 @@ export class CameraController {
       if (Math.hypot(fx, fy) < 0.2 && carUp) { fx = -carUp.x; fy = -carUp.y; }
       if (Math.hypot(fx, fy) > 0.05) targetHeading = Math.atan2(fy, fx);
     }
-    if (!this.initialized) { this.heading = targetHeading; }
+    if (!wasInit) { this.heading = targetHeading; }
     let dh = targetHeading - this.heading;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
@@ -84,7 +85,7 @@ export class CameraController {
       _v.x += _n.x * (40 - d); _v.y += _n.y * (40 - d); _v.z += _n.z * (40 - d);
     }
 
-    if (!this.initialized) {
+    if (!wasInit) {
       this.pos.copy(_v);
       this.initialized = true;
     } else {
@@ -103,7 +104,7 @@ export class CameraController {
       const ang = THREE.MathUtils.degToRad(s.angle);
       _look.set(carPos.x + hx * 600, carPos.y + hy * 600, carPos.z + 70 + Math.tan(ang) * 600);
     }
-    this.lookAt.lerp(_look, this.initialized ? 1 - Math.exp(-dt * 20) : 1);
+    this.lookAt.lerp(_look, wasInit ? 1 - Math.exp(-dt * 20) : 1);
 
     cam.position.copy(this.pos);
     if (this.shakeAmount > 0.01) {
@@ -118,10 +119,11 @@ export class CameraController {
   // Seguir el balon (coche demolido o espectador)
   updateSpectate(dt, ballPos) {
     _v.set(ballPos.x * 0.6, ballPos.y * 0.6 - 2500, Math.max(900, ballPos.z + 700));
-    if (!this.initialized) { this.pos.copy(_v); this.initialized = true; }
+    const wasInit = this.initialized;
+    if (!wasInit) { this.pos.copy(_v); this.initialized = true; }
     this.pos.lerp(_v, 1 - Math.exp(-dt * 3));
     this.camera.position.copy(this.pos);
-    this.lookAt.lerp(_look.set(ballPos.x, ballPos.y, ballPos.z), 1 - Math.exp(-dt * 6));
+    this.lookAt.lerp(_look.set(ballPos.x, ballPos.y, ballPos.z), wasInit ? 1 - Math.exp(-dt * 6) : 1);
     this.camera.lookAt(this.lookAt);
   }
 }

@@ -51,6 +51,27 @@ function goalF(x, y, z) {
 }
 
 export function arenaDist(x, y, z) {
+  const ax = Math.abs(x), ay = Math.abs(y);
+  if (ax < GOAL_HALF_WIDTH && ay < ARENA_EXTENT_Y && z < GOAL_HEIGHT) {
+    // Delante de la boca de la porteria: distancia exacta al suelo, a los postes y al larguero.
+    // (El max() de abajo veria un bloque cuadrado invisible alrededor del marco.)
+    // Todo lo demas (otro poste, techo, muros laterales, fondo) queda a mas de GOAL_HEIGHT.
+    let d = z;
+    const ex = GOAL_HALF_WIDTH - ax;
+    if (ex < d) {
+      // poste = muro de fondo (con su curva) mas alla de x = GOAL_HALF_WIDTH
+      const w = -arenaF(x, y, z);
+      const p = w > 0 ? Math.sqrt(ex * ex + w * w) : ex;
+      if (p < d) d = p;
+    }
+    const ey = ARENA_EXTENT_Y - ay;
+    if (ey < d) {
+      const ez = GOAL_HEIGHT - z;
+      const b = Math.sqrt(ey * ey + ez * ez);
+      if (b < d) d = b;
+    }
+    return d;
+  }
   return -Math.min(arenaF(x, y, z), goalF(x, y, z));
 }
 
@@ -68,13 +89,14 @@ export function arenaNormal(x, y, z, out) {
 // Lanza un rayo desde (o) en direccion (d) normalizada hasta maxT. Devuelve t del impacto o -1.
 export function arenaRaycast(o, d, maxT) {
   let t = 0;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 32; i++) {
     const s = arenaDist(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t);
     if (s < 0.25) return t < 0 ? 0 : t;
     t += s;
     if (t > maxT) return -1;
   }
-  return t <= maxT ? t : -1;
+  // Sin converger no hay impacto real: solo vale si el ultimo paso ya toca la superficie
+  return arenaDist(o.x + d.x * t, o.y + d.y * t, o.z + d.z * t) < 0.25 ? t : -1;
 }
 
 // Exportado para generar la malla del estadio en el cliente

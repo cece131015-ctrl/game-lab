@@ -7,7 +7,7 @@ import { emptyControls } from './car.js';
 import * as C from './constants.js';
 
 export const DIFFICULTIES = {
-  rookie: { label: 'Principiante', reaction: 0.25, boost: false, flips: false, maxReach: 150, aerial: false, aimError: 450, speedCap: 1410, kickoffFlip: false, rotate: false },
+  rookie: { label: 'Principiante', reaction: 0.4, boost: false, flips: false, maxReach: 150, aerial: false, aimError: 700, speedCap: 1000, kickoffFlip: false, rotate: false },
   pro: { label: 'Pro', reaction: 0.1, boost: true, flips: true, maxReach: 320, aerial: false, aimError: 180, speedCap: 2300, kickoffFlip: true, rotate: true },
   allstar: { label: 'Leyenda', reaction: 0.03, boost: true, flips: true, maxReach: 1300, aerial: true, aimError: 60, speedCap: 2300, kickoffFlip: true, rotate: true },
 };
@@ -65,6 +65,8 @@ export class Bot {
     this.maneuver = null;
     this.aimOffset = 0;
     this.stuckTimer = 0;
+    this.stuckThrottle = 1;
+    this.stuckSteer = 0;
     this.lastJumpPress = 0;
     this.time = 0;
     this.shotDir = new V3(0, 1, 0);
@@ -102,6 +104,13 @@ export class Bot {
       this.maneuver = null;
     }
 
+    // Volcado sobre el techo (sin ruedas en el suelo): saltar activa el autoflip
+    if (car.numContacts === 0 && car.worldContact && car.worldNormal.z > C.CAR_AUTOFLIP_NORMZ_THRESH &&
+        Math.abs(Math.atan2(_l.z, _u.z)) > C.CAR_AUTOFLIP_ROLL_THRESH) {
+      if (this.time - this.lastJumpPress > 0.3) { ctl.jump = true; this.lastJumpPress = this.time; }
+      return ctl;
+    }
+
     // Recuperacion en el aire: aterrizar sobre las ruedas
     if (car.numContacts === 0 && !car.isOnGround) {
       this.recover(car);
@@ -113,23 +122,28 @@ export class Bot {
       if (this.time - this.lastJumpPress > 0.3) { ctl.jump = true; this.lastJumpPress = this.time; }
       return ctl;
     }
-    const spd = car.vel.length();
-    if (spd < 80 && game.phase === PHASE.PLAY) this.stuckTimer += dt; else this.stuckTimer = 0;
     if (this.stuckTimer > 1.2) {
+      // desatascar: salto corto y marcha atras (contra lo que empujaba), girando al otro lado
       this.stuckTimer = 0;
-      this.maneuver = { type: 'jump', t: 0, hold: 0.15 };
+      this.maneuver = { type: 'jump', t: 0, hold: 0.15, throttle: -this.stuckThrottle, steer: -this.stuckSteer };
       return ctl;
     }
 
     // --- Saque inicial ---
     const isKickoff = !game.ballHitThisKickoff && Math.abs(ball.pos.x) < 5 && Math.abs(ball.pos.y) < 5 && game.phase === PHASE.PLAY && !game.opts.freePlay;
     if (isKickoff) {
+      let arrived = false;
       if (this.isClosestOnTeam(game, car, ball.pos)) {
         this.kickoff(car, ball, dirY);
       } else {
-        // los demas van a por turbo o se quedan atras
-        this.driveTo(car, _tmp.set(clamp(car.pos.x, -1500, 1500) * 0.3, ownGoalY * 0.8, 0), 1400, false);
+        // los demas se colocan sin cruzarse: el mas lejano en la porteria y el otro de segundo hombre
+        const far = this.isFarthestOnTeam(game, car, ball.pos);
+        _tmp.set(clamp(car.pos.x, -1500, 1500) * 0.3, ownGoalY * (far ? 0.93 : 0.45), 0);
+        this.driveTo(car, _tmp, 1400, false);
+        arrived = Math.hypot(_tmp.x - car.pos.x, _tmp.y - car.pos.y) < 250;
+        if (arrived) this.faceTowards(car, ball.pos);
       }
+      this.trackStuck(game, car, dt, arrived);
       return ctl;
     }
 
@@ -158,7 +172,32 @@ export class Bot {
         }
         break;
     }
+    // esperar parado en su sitio no es estar atascado
+    const parked = this.mode === 'position' && Math.hypot(this.target.x - car.pos.x, this.target.y - car.pos.y) < 300;
+    this.trackStuck(game, car, dt, parked);
     return ctl;
+  }
+
+  // Atasco: acelera pero no se mueve (con los controles ya decididos en este tick)
+  trackStuck(game, car, dt, parked) {
+    const wantsMove = Math.abs(this.controls.throttle) > 0.5 && !parked;
+    if (wantsMove && car.vel.length() < 80 && game.phase === PHASE.PLAY) {
+      this.stuckTimer += dt;
+      this.stuckThrottle = Math.sign(this.controls.throttle);
+      this.stuckSteer = this.controls.steer;
+    } else {
+      this.stuckTimer = 0;
+    }
+  }
+
+  isFarthestOnTeam(game, car, p) {
+    const myD = car.pos.distanceTo(p);
+    for (const c of game.world.cars) {
+      if (c === car || c.team !== car.team || c.isDemoed) continue;
+      const d = c.pos.distanceTo(p);
+      if (d > myD + 1 || (Math.abs(d - myD) <= 1 && c.id > car.id)) return false;
+    }
+    return true;
   }
 
   isClosestOnTeam(game, car, p) {
@@ -219,7 +258,8 @@ export class Bot {
     const rank = order.indexOf(car);
 
     const ahead = (car.pos.y - ball.pos.y) * dirY;
-    if (isAttacker || danger) {
+    // con peligro de gol tambien sale el segundo hombre; el portero se queda en la linea
+    if (isAttacker || (danger && rank <= 1)) {
       // En 1v1, si el rival llega antes y estamos por delante del balon, volver a defender
       const oppFirst = opponents.length && opponents.some((o) => this.eta(o, ball.pos) + 0.3 < this.eta(car, ball.pos));
       if (!danger && oppFirst && ahead > 300 && teammates.length === 1 && this.p.rotate) {
@@ -244,13 +284,18 @@ export class Bot {
       }
     }
     this.mode = 'position';
-    if (rank >= 2 || (teammates.length === 2 && rank === 1 && ball.pos.y * dirY < 0)) {
+    if (danger) {
+      // portero con peligro de gol: sobre la linea, tapando por donde entraria
+      this.target.set(clamp(danger.pos.x, -C.GOAL_HALF_WIDTH + 150, C.GOAL_HALF_WIDTH - 150), ownGoalY * 0.97, 0);
+    } else if (rank >= 2 || (teammates.length === 2 && rank === 1 && ball.pos.y * dirY < 0)) {
       // portero
       this.target.set(clamp(ball.pos.x * 0.35, -700, 700), ownGoalY * 0.93, 0);
     } else {
-      // segundo hombre: detras del balon hacia nuestra porteria
+      // segundo hombre: detras del balon hacia nuestra porteria, pero por delante del portero
       const back = 2200;
-      this.target.set(clamp(ball.pos.x * 0.5, -3000, 3000), clamp(ball.pos.y - dirY * back, -4700, 4700), 0);
+      let y = clamp(ball.pos.y - dirY * back, -4700, 4700);
+      if ((y - ownGoalY) * dirY < 1300) y = ownGoalY + dirY * 1300;
+      this.target.set(clamp(ball.pos.x * 0.5, -3000, 3000), y, 0);
     }
     const dist = Math.hypot(this.target.x - car.pos.x, this.target.y - car.pos.y);
     this.targetSpeed = dist > 1500 ? 2300 : clamp(dist * 1.2, 0, 1400);
@@ -312,11 +357,20 @@ export class Bot {
     const dist = Math.hypot(tx - car.pos.x, ty - car.pos.y);
     const behind = (car.pos.x - bt.x) * this.shotDir.x + (car.pos.y - bt.y) * this.shotDir.y; // >0: por delante
     const approach = _d.set(tx, ty, 0);
-    if (behind > -50 && dist > 250) {
+    const circling = behind > -50 && dist > 250;
+    if (circling) {
       // estamos al otro lado: rodear el balon
       const side = ((car.pos.x - bt.x) * this.shotDir.y - (car.pos.y - bt.y) * this.shotDir.x) >= 0 ? 1 : -1;
       approach.x = bt.x - this.shotDir.x * 700 + this.shotDir.y * side * 500;
       approach.y = bt.y - this.shotDir.y * 700 - this.shotDir.x * side * 500;
+      // cerca y delante del balon: pasar primero por su lado para no empujarlo hacia atras
+      const lat = (car.pos.x - ball.pos.x) * this.shotDir.y - (car.pos.y - ball.pos.y) * this.shotDir.x;
+      const fwd = (car.pos.x - ball.pos.x) * this.shotDir.x + (car.pos.y - ball.pos.y) * this.shotDir.y;
+      if (distBall < 1200 && fwd > -100 && Math.abs(lat) < 350) {
+        const s2 = lat >= 0 ? 1 : -1;
+        approach.x = ball.pos.x + this.shotDir.y * s2 * 500;
+        approach.y = ball.pos.y - this.shotDir.x * s2 * 500;
+      }
     } else if (dist > 400) {
       const off = Math.min(dist * 0.4, 700);
       approach.x = tx - this.shotDir.x * off;
@@ -339,8 +393,9 @@ export class Bot {
         this.maneuver = { type: 'aerial', t: 0, target: bt.clone(), arrive: this.time + tToBall };
       } else if (h > 170 && h < 420 && tToBall < 0.45 && tToBall > 0.12 && align > 0.75 && this.p.maxReach > 200) {
         this.maneuver = { type: 'jumpshot', t: 0, height: h, double: h > 300 };
-      } else if (this.p.flips && distBall < 420 && ball.pos.z < 180 && align > 0.8 && car.vel.length() > 700) {
-        // esquiva hacia el balon para darle potencia
+      } else if (this.p.flips && !circling && distBall < 420 && ball.pos.z < 180 && align > 0.8 && car.vel.length() > 700 &&
+          (toBall.x * this.shotDir.x + toBall.y * this.shotDir.y) / (Math.hypot(toBall.x, toBall.y) || 1) > 0.3) {
+        // esquiva hacia el balon para darle potencia (solo si lo manda hacia donde queremos)
         car.left(_l);
         const lx = toBall.x * _f.x + toBall.y * _f.y;
         const ly = toBall.x * _l.x + toBall.y * _l.y;
@@ -356,7 +411,7 @@ export class Bot {
     const dist = car.pos.distanceTo(ball.pos);
     _tmp.set(0, -dirY * 60, 0);
     this.driveTo(car, _tmp, 2300, true);
-    ctl.boost = car.isOnGround && dist > 600;
+    ctl.boost = this.p.boost && car.isOnGround && dist > 600;
     if (this.p.kickoffFlip && dist < 620 && car.vel.length() > 1000 && car.isOnGround) {
       this.maneuver = { type: 'flip', t: 0, pitch: -1, yaw: 0, delay: 0.06 };
     }
@@ -366,7 +421,13 @@ export class Bot {
   driveTo(car, target, speed, allowBoost) {
     const ctl = this.controls;
     car.forward(_f); car.left(_l); car.up(_u);
-    const dx = target.x - car.pos.x, dy = target.y - car.pos.y, dz = (target.z || 0) - car.pos.z;
+    let tx = target.x, ty = target.y;
+    if (Math.abs(car.pos.y) > C.ARENA_EXTENT_Y && Math.abs(tx) > C.GOAL_HALF_WIDTH - 150) {
+      // dentro de la porteria: salir primero por la boca (no atravesar los postes)
+      tx = clamp(tx, -C.GOAL_HALF_WIDTH + 300, C.GOAL_HALF_WIDTH - 300);
+      ty = Math.sign(car.pos.y) * (C.ARENA_EXTENT_Y - 300);
+    }
+    const dx = tx - car.pos.x, dy = ty - car.pos.y, dz = (target.z || 0) - car.pos.z;
     const lx = dx * _f.x + dy * _f.y + dz * _f.z;
     const ly = dx * _l.x + dy * _l.y + dz * _l.z;
     const angle = Math.atan2(ly, lx);
@@ -439,8 +500,9 @@ export class Bot {
     switch (m.type) {
       case 'jump': {
         ctl.jump = m.t < m.hold;
-        ctl.throttle = 1;
-        return m.t > m.hold + 0.3;
+        ctl.throttle = m.throttle;
+        ctl.steer = m.steer;
+        return m.t > m.hold + 0.5;
       }
       case 'flip': {
         // salto corto + esquiva en la direccion indicada
@@ -462,10 +524,11 @@ export class Bot {
         const hold = clamp((m.height - 120) / 600, 0.05, 0.2);
         ctl.throttle = 1;
         ctl.jump = m.t < hold;
-        if (m.double && m.t > hold + 0.05 && m.t < hold + 0.09) ctl.jump = true;
         // orientar hacia el balon
         _d.subVectors(game.world.ball.pos, car.pos).normalize();
         if (m.t > 0.05) this.orient(car, _d);
+        // segundo salto con el stick centrado (si no, seria una esquiva)
+        if (m.double && m.t > hold + 0.05 && m.t < hold + 0.09) { ctl.jump = true; ctl.pitch = 0; ctl.yaw = 0; ctl.roll = 0; }
         if (!m.double && m.t > 0.25 && this.p.flips && car.pos.distanceTo(game.world.ball.pos) < 260 && !m.flipped) {
           m.flipped = true;
           ctl.jump = true; ctl.pitch = -1; ctl.yaw = 0; ctl.roll = 0;

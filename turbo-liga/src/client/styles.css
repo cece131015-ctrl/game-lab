@@ -170,6 +170,7 @@ input[type=range] { width: 100%; accent-color: var(--blue); }
 #touch-controls [data-tc=jump] { right: 200px; bottom: 30px; }
 #touch-controls [data-tc=boost] { right: 110px; bottom: 120px; background: rgba(255,122,26,0.3); }
 #touch-controls [data-tc=drift] { right: 210px; bottom: 130px; width: 64px; height: 64px; }
+#touch-controls #tc-pause { top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 48px; height: 48px; border-radius: 12px; font-size: 18px; letter-spacing: 2px; }
 
 @media (max-width: 720px) {
   .two-col { grid-template-columns: 1fr; }

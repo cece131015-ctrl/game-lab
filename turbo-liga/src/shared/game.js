@@ -1,5 +1,6 @@
 // Reglas del partido: saque, cuenta atras, goles, tiempo, prorroga y estadisticas.
 import { World } from './world.js';
+import { Ball } from './ball.js';
 import * as C from './constants.js';
 
 export const PHASE = { COUNTDOWN: 0, PLAY: 1, GOAL: 2, ENDED: 3 };
@@ -34,6 +35,7 @@ export class Game {
     this.elapsed = 0;
     this.lastScorer = null;
     this.ballHitThisKickoff = false;
+    this.kickoffTouchTime = 0; // momento del primer toque del saque
     this.world.onTouch = (car, strength) => this._onTouch(car, strength);
     this.world.onDemo = (car, by) => {
       if (!this.opts.authoritative) return; // en el cliente las estadisticas llegan del servidor
@@ -117,19 +119,20 @@ export class Game {
     if (!this.opts.authoritative) return;
     const p = this.players.get(car.id);
     const last = this.touches[this.touches.length - 1];
+    if (!this.ballHitThisKickoff) this.kickoffTouchTime = this.elapsed;
     this.ballHitThisKickoff = true;
     if (!last || last.carId !== car.id || this.elapsed - last.time > 0.5) {
-      // tiro / parada (proyeccion simple de la trayectoria del balon)
-      const ball = this.world.ball;
-      if (p && !this.opts.freePlay) {
-        const ownGoalY = car.team === C.TEAM_BLUE ? -C.ARENA_EXTENT_Y : C.ARENA_EXTENT_Y;
-        // velocidad antes del toque ~ la que tenia el balon
-        if (headingIntoGoal(ball.pos, ball.vel, ownGoalY) && strength > 300) {
-          p.saves++; p.points += 50;
-          this.events.push({ type: 'save', car: car.id });
-        }
+      // el toque anterior se decide con el balon tal como lo dejo (en el mismo tick no se puede)
+      if (last) {
+        if (this.elapsed > last.time) this._resolveTouch(last);
+        else last.checkShot = last.saveCheck = false;
       }
-      this.touches.push({ carId: car.id, team: car.team, time: this.elapsed, checkShot: true });
+      // posible parada: el balon iba a entrar en nuestra porteria antes del toque.
+      // Se confirma unos ticks despues si el toque lo desvio (los toques del saque no cuentan)
+      const ball = this.world.ball;
+      const saveCheck = !!p && !this.opts.freePlay && strength > 300 &&
+        this.elapsed - this.kickoffTouchTime > 0.5 && headingIntoGoal(ball.pos, ball.vel, saveLineY(car.team));
+      this.touches.push({ carId: car.id, team: car.team, time: this.elapsed, checkShot: true, saveCheck, shot: false });
       if (this.touches.length > 10) this.touches.shift();
       if (p) p.points += 2;
     } else {
@@ -187,16 +190,36 @@ export class Game {
   }
 
   _checkShots() {
-    // Un toque cuenta como tiro si deja el balon camino de la porteria rival
+    // Tiros y paradas se deciden un poco despues del toque (o al llegar el siguiente)
     const t = this.touches[this.touches.length - 1];
-    if (!t || !t.checkShot || this.elapsed - t.time < 0.05) return;
-    t.checkShot = false;
+    if (!t) return;
+    const age = this.elapsed - t.time;
+    if (t.checkShot && age >= 0.05) this._resolveTouch(t, true, false);
+    if (t.saveCheck && age >= 0.1) this._resolveTouch(t, false, true);
+  }
+
+  _resolveTouch(t, shot = true, save = true) {
     const ball = this.world.ball;
-    const oppGoalY = t.team === C.TEAM_BLUE ? C.ARENA_EXTENT_Y : -C.ARENA_EXTENT_Y;
-    if (headingIntoGoal(ball.pos, ball.vel, oppGoalY)) {
-      const p = this.players.get(t.carId);
-      if (p) { p.shots++; p.points += 20; }
-      this.events.push({ type: 'shot', car: t.carId });
+    const p = this.players.get(t.carId);
+    if (shot && t.checkShot) {
+      // tiro: el toque deja el balon camino de la porteria rival
+      t.checkShot = false;
+      const oppGoalY = t.team === C.TEAM_BLUE ? C.ARENA_EXTENT_Y : -C.ARENA_EXTENT_Y;
+      if (headingIntoGoal(ball.pos, ball.vel, oppGoalY)) {
+        t.shot = true;
+        if (p) { p.shots++; p.points += 20; }
+        this.events.push({ type: 'shot', car: t.carId });
+      }
+    }
+    if (save && t.saveCheck) {
+      // parada: el balon ya no va hacia nuestra porteria, ni en linea recta (tambien balones
+      // lentos) ni rebotando en el palo o la pared
+      t.saveCheck = false;
+      const lineY = saveLineY(t.team);
+      if (!headingIntoGoal(ball.pos, ball.vel, lineY, 10) && !ballEntersGoal(ball, lineY, 3)) {
+        if (p) { p.saves++; p.points += 50; }
+        this.events.push({ type: 'save', car: t.carId });
+      }
     }
   }
 
@@ -214,9 +237,13 @@ export class Game {
         assist = t; break;
       }
     }
+    for (const t of this.touches) t.saveCheck = false; // con gol no hay parada
     if (!this.opts.freePlay) this.score[scoringTeam]++;
     const sp = scorer && this.players.get(scorer.carId);
-    if (sp && !this.opts.freePlay) { sp.goals++; sp.points += 100; }
+    if (sp && !this.opts.freePlay) {
+      sp.goals++; sp.points += 100;
+      if (!scorer.shot) sp.shots++; // todo gol cuenta como tiro
+    }
     const ap = assist && this.players.get(assist.carId);
     if (ap && !this.opts.freePlay) { ap.assists++; ap.points += 50; }
     const speed = b.vel.length();
@@ -272,11 +299,30 @@ export class Game {
   }
 }
 
-export function headingIntoGoal(pos, vel, goalY) {
+// Linea de gol (centro del balon) de la porteria que defiende el equipo
+function saveLineY(team) {
+  return (team === C.TEAM_BLUE ? -1 : 1) * (C.GOAL_SCORE_Y + C.BALL_RADIUS);
+}
+
+// ¿Cruza el balon (solo con el estadio, sin coches) esa linea de gol en los proximos segundos?
+const simBall = new Ball();
+function ballEntersGoal(ball, lineY, secs) {
+  simBall.copyFrom(ball);
+  for (let t = 0; t <= secs; t += C.DT) {
+    if (lineY > 0 ? simBall.pos.y > lineY : simBall.pos.y < lineY) return true;
+    simBall.applyForces(C.DT);
+    simBall.collideArena();
+    simBall.finishTick();
+    simBall.integrate(C.DT);
+  }
+  return false;
+}
+
+export function headingIntoGoal(pos, vel, goalY, horizon = 3) {
   const dy = goalY - pos.y;
   if (Math.abs(vel.y) < 1 || Math.sign(dy) !== Math.sign(vel.y)) return false;
   const t = dy / vel.y;
-  if (t > 3) return false;
+  if (t > horizon) return false;
   const x = pos.x + vel.x * t;
   let z = pos.z + vel.z * t + 0.5 * C.GRAVITY_Z * t * t;
   if (z < C.BALL_RADIUS) z = C.BALL_RADIUS; // rebota en el suelo
