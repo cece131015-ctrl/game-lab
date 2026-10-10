@@ -1,0 +1,13 @@
+# Blueprint de Render: despliega Turbo Liga (juego + salas + señalizacion de voz) con HTTPS
+services:
+  - type: web
+    name: turbo-liga
+    runtime: node
+    rootDir: turbo-liga
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
