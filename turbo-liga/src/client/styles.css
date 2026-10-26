@@ -182,3 +182,9 @@ input[type=range] { width: 100%; accent-color: var(--blue); }
   .sb-team span { display: none; }
   .screen.garage.active { margin: 0 auto; }
 }
+
+/* Capa de interfaz React sobre el canvas: solo capturan el raton los menus y los controles */
+#ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+#ui #menu { pointer-events: auto; }
+#ui #menu.over-game { background: radial-gradient(ellipse at center, rgba(5,8,20,0.45), rgba(5,8,20,0.8)); }
+.main-screen .footer-note b { color: var(--text); }

@@ -2,7 +2,7 @@
 
 Fútbol con coches en 3D al estilo Rocket League, para el navegador. Incluye bots con IA, salas online para jugar con amigos y chat de voz con el micrófono abierto.
 
-![Turbo Liga](https://img.shields.io/badge/three.js-r186-blue) ![Node](https://img.shields.io/badge/node-%E2%89%A518-green)
+![three.js](https://img.shields.io/badge/three.js-r186-blue) ![React](https://img.shields.io/badge/React-19-61dafb) ![Node](https://img.shields.io/badge/node-%E2%89%A518-green)
 
 ## Qué incluye
 
@@ -124,7 +124,10 @@ turbo-liga/
 │   ├── world.js       Colisiones coche-balón, coche-coche, demoliciones, pads
 │   ├── game.js        Partido: saque, goles, tiempo, prórroga, estadísticas
 │   └── bot.js         IA de los bots
-├── src/client/        Navegador: three.js, HUD, menús, sonido, red, voz, salas P2P
+├── src/client/
+│   ├── engine.js      Motor sin interfaz: 3D, sesiones, red, voz y teclado (estado observable)
+│   ├── ui/*.jsx       Interfaz en React: menús, HUD, sala, garaje, ajustes, controles táctiles
+│   └── render/        three.js: estadio, coches, cámara y efectos
 ├── server/
 │   ├── hub.js         Salas y mensajes; funciona en Node y dentro del navegador del anfitrión
 │   ├── room.js        Sala, equipos y partido autoritativo a 120 Hz
@@ -132,6 +135,7 @@ turbo-liga/
 └── turbo-liga.html    El juego completo en un solo archivo
 ```
 
+- **Interfaz**: React 19. El motor (`engine.js`) publica su estado en una pequeña store y los componentes de `ui/` se suscriben con `useSyncExternalStore`. Así el HUD solo se repinta cuando cambia algo (marcador, turbo, reloj) y el canvas 3D sigue a su ritmo.
 - **Red**: el servidor simula el partido a 120 Hz y manda el estado 30 veces por segundo. Cada cliente predice su propio coche y el resto del mundo, y cuando llega el estado del servidor vuelve a ese punto y repite sus entradas pendientes (*rollback*, como en RL). Las correcciones se suavizan para que no se noten saltos.
 - **Voz**: es una malla WebRTC de solo audio, con cancelación de eco y supresión de ruido. El servidor solo reenvía la señalización.
 
